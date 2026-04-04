@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Ren'Py Editor Pro</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+
+    <style>
+        /* ── Layout general ── */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 60px);
+        }
+
+        /* ── Sidebar izquierda ── */
+        .sidebar {
+            width: 200px;
+            background: #111;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-section {
+            font-size: 10px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 8px 0 2px;
+        }
+
+        .drag-item {
+            padding: 10px;
+            background: #444;
+            color: white;
+            cursor: move;
+            border-radius: 4px;
+            text-align: center;
+            user-select: none;
+            font-size: 13px;
+        }
+        .drag-item:hover { background: #555; }
+
+        /* ── Canvas ── */
+        #drawflow {
+            flex-grow: 1;
+            transition: all 0.3s ease;
+        }
+
+        /* ── Panel de previsualización ── */
+        #preview-panel {
+            width: 0;
+            background: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: width 0.3s ease;
+            flex-shrink: 0;
+            border-left: 1px solid #333;
+        }
+        #preview-panel.open {
+            width: 360px;
+        }
+
+        .preview-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            background: #111;
+            border-bottom: 1px solid #333;
+            flex-shrink: 0;
+        }
+        .preview-toolbar span {
+            color: #aaa;
+            font-size: 13px;
+            font-weight: bold;
+            flex-grow: 1;
+        }
+        .preview-toolbar button {
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+
+        #preview-code {
+            flex-grow: 1;
+            background: transparent;
+            color: #d4d4d4;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 14px;
+            border: none;
+            resize: none;
+            outline: none;
+            overflow-y: auto;
+            white-space: pre;
+        }
+
+        /* ── Botones del toolbar principal ── */
+        .toolbar-btn {
+            color: white;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        /* ── Nodos: estilos compartidos ── */
+        .node-container { min-width: 200px; }
+
+        .node-header {
+            padding: 6px 10px;
+            border-radius: 4px 4px 0 0;
+            font-size: 12px;
+            font-weight: bold;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* Colores de headers por tipo */
+        .char-header  { background: #9b59b6; }
+        .dial-header  { background: #3498db; }
+        .show-header  { background: #27ae60; }
+        .scene-header { background: #e67e22; }
+        .play-header  { background: #e91e8c; }
+        .code-header  { background: #555;    }
+
+        .node-content {
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            color: white;
+            font-size: 13px;
+        }
+
+        .node-content input,
+        .node-content select,
+        .node-content textarea {
+            background: #1a1a1a;
+            border: 1px solid #555;
+            color: white;
+            padding: 5px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        textarea { height: 70px; resize: none; }
+        .code-node textarea { font-family: monospace; height: 110px; }
+
+        /* ── Botón de bloquear ID ── */
+        .lock-btn {
+            padding: 3px 8px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            background: #27ae60;
+            color: white;
+            align-self: flex-start;
+        }
+        .lock-btn.locked { background: #c0392b; }
+
+        /* ── Botón de minimizar nodo personaje ── */
+        .minimize-btn {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.7);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 2px;
+            line-height: 1;
+        }
+        .minimize-btn:hover { color: white; }
+
+        /* Contenido del nodo cuando está minimizado */
+        .node-content.collapsed { display: none; }
+
+        /* Etiqueta que se muestra cuando el nodo está minimizado */
+        .char-mini-label {
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+            padding: 3px 10px 6px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Toolbar principal ── -->
+<div class="toolbar">
+    <h2 style="color:white;margin:0;font-size:18px;margin-right:20px;">Ren'Py Canvas</h2>
+    <button class="toolbar-btn" onclick="togglePreview()" style="background:#2980b9;">👁 Vista previa</button>
+    <button class="toolbar-btn" onclick="downloadRenPyScript()" style="background:#e67e22;">⬇ Descargar .rpy</button>
+    <button class="toolbar-btn" onclick="clearCanvas()" style="background:#555;">🗑 Limpiar canvas</button>
+</div>
+
+<!-- ── Área principal ── -->
+<div class="main-container">
+
+    <!-- Panel izquierdo: tipos de nodos -->
+    <div class="sidebar">
+        <div class="sidebar-section">Personajes</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="character">👤 Personaje</div>
+
+        <div class="sidebar-section">Escena</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="scene">🖼 Scene</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="showHide">🎭 Show / Hide</div>
+
+        <div class="sidebar-section">Audio</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="playStop">🎵 Play / Stop</div>
+
+        <div class="sidebar-section">Narrativa</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="dialog">💬 Diálogo</div>
+
+        <div class="sidebar-section">Avanzado</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="code">📝 Código</div>
+    </div>
+
+    <!-- Canvas Drawflow -->
+    <div id="drawflow" ondrop="drop(event)" ondragover="allowDrop(event)"></div>
+
+    <!-- Panel de previsualización (empieza cerrado) -->
+    <div id="preview-panel">
+        <div class="preview-toolbar">
+            <span>📄 script.rpy</span>
+            <button class="toolbar-btn" onclick="copyPreview()" style="background:#2980b9;" title="Copiar al portapapeles">📋 Copiar</button>
+            <button class="toolbar-btn" onclick="downloadRenPyScript()" style="background:#e67e22;" title="Descargar archivo">⬇</button>
+            <button class="toolbar-btn" onclick="togglePreview()" style="background:#444;" title="Cerrar">✕</button>
+        </div>
+        <textarea id="preview-code" readonly></textarea>
+    </div>
+
+</div>
+
+<script>
+    // ─────────────────────────────────────────────
+    // INICIALIZACIÓN
+    // ─────────────────────────────────────────────
+
+    const container = document.getElementById("drawflow");
+    const editor    = new Drawflow(container);
+    editor.start();
+
+    let characters  = [];
+    let previewOpen = false;
+
+    // Almacén propio para datos de personajes, independiente de Drawflow.
+    // Evita el bug donde Drawflow mezcla datos al regenerar el DOM.
+    const characterData = {};
+
+
+    // ─────────────────────────────────────────────
+    // DRAG & DROP
+    // ─────────────────────────────────────────────
+
+    function allowDrop(ev) { ev.preventDefault(); }
+
+    function drag(ev) {
+        ev.dataTransfer.setData("node", ev.target.getAttribute('data-node'));
+    }
+
+    function drop(ev) {
+        ev.preventDefault();
+
+        const nodeType   = ev.dataTransfer.getData("node");
+        const canvasRect = container.getBoundingClientRect();
+
+        const pos_x = (ev.clientX - canvasRect.left - editor.canvas_x) / editor.zoom;
+        const pos_y = (ev.clientY - canvasRect.top  - editor.canvas_y) / editor.zoom;
+
+        let nodeId;
+        if (nodeType === 'character') nodeId = addCharacterDefinition(pos_x, pos_y);
+        if (nodeType === 'dialog')    nodeId = addDialogue(pos_x, pos_y);
+        if (nodeType === 'showHide')  nodeId = addShowHide(pos_x, pos_y);
+        if (nodeType === 'scene')     nodeId = addScene(pos_x, pos_y);
+        if (nodeType === 'playStop')  nodeId = addPlayStop(pos_x, pos_y);
+        if (nodeType === 'code')      nodeId = addCode(pos_x, pos_y);
+
+        // Centramos el nodo en el cursor tras el primer render
+        setTimeout(() => {
+            const nodeEl = document.querySelector(`#node-${nodeId}`);
+            if (!nodeEl) return;
+
+            const centeredX = pos_x - nodeEl.offsetWidth  / 2;
+            const centeredY = pos_y - nodeEl.offsetHeight / 2;
+
+            editor.drawflow.drawflow.Home.data[nodeId].pos_x = centeredX;
+            editor.drawflow.drawflow.Home.data[nodeId].pos_y = centeredY;
+            nodeEl.style.left = centeredX + "px";
+            nodeEl.style.top  = centeredY + "px";
+        }, 0);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: DEFINIR PERSONAJE
+    // ─────────────────────────────────────────────
+
+    function addCharacterDefinition(x = 50, y = 50) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header char-header">
+                    <span>Definir Personaje</span>
+                    <button class="minimize-btn" onclick="toggleCharacterMinimize(this)" title="Minimizar">−</button>
+                </div>
+                <div class="node-content">
+                    ID:
+                    <input type="text" df-id placeholder="e"
+                        oninput="onCharacterInput(this, 'id')"
+                        title="Identificador corto sin espacios. Bloquéalo al terminar.">
+                    Nombre:
+                    <input type="text" df-name placeholder="Eileen"
+                        oninput="onCharacterInput(this, 'name')">
+                    Color:
+                    <input type="color" df-color value="#ffffff"
+                        onchange="onCharacterInput(this, 'color')">
+                    <button class="lock-btn" onclick="toggleCharacterLock(this)">
+                        🔓 ID libre
+                    </button>
+                </div>
+                <div class="char-mini-label" style="display:none">— sin nombre —</div>
+            </div>
+        `;
+
+        const nodeId = editor.addNode(
+            'character_def', 0, 0, x, y, 'char-node',
+            { id: '', name: '', color: '#ffffff' },
+            html
+        );
+
+        characterData[nodeId] = { id: '', name: '', color: '#ffffff', locked: false };
+        return nodeId;
+    }
+
+    // Guarda el campo editado en characterData (no en Drawflow)
+    function onCharacterInput(inputEl, field) {
+        const nodeEl = inputEl.closest('.drawflow-node');
+        if (!nodeEl) return;
+
+        const nodeId = parseInt(nodeEl.id.replace('node-', ''));
+        if (field === 'id' && characterData[nodeId]?.locked) return;
+
+        if (!characterData[nodeId]) characterData[nodeId] = { id: '', name: '', color: '#ffffff', locked: false };
+        characterData[nodeId][field] = inputEl.value;
+
+        rebuildCharacters();
+        refreshPreview();
+    }
+
+    // Bloquear / desbloquear el campo ID
+    function toggleCharacterLock(btn) {
+        const nodeEl  = btn.closest('.drawflow-node');
+        const nodeId  = parseInt(nodeEl.id.replace('node-', ''));
+        const idInput = nodeEl.querySelector('[df-id]');
+        const isLocked = characterData[nodeId]?.locked;
+
+        if (isLocked) {
+            characterData[nodeId].locked = false;
+            idInput.disabled = false;
+            btn.textContent  = '🔓 ID libre';
+            btn.classList.remove('locked');
+        } else {
+            if (!characterData[nodeId]?.id) { alert('Escribe un ID antes de bloquear.'); return; }
+            characterData[nodeId].locked = true;
+            idInput.disabled = true;
+            btn.textContent  = '🔒 ID fijo';
+            btn.classList.add('locked');
+        }
+    }
+
+    // Minimizar / expandir el nodo de personaje
+    function toggleCharacterMinimize(btn) {
+        const nodeContainer = btn.closest('.node-container');
+        const content       = nodeContainer.querySelector('.node-content');
+        const miniLabel     = nodeContainer.querySelector('.char-mini-label');
+        const nodeEl        = btn.closest('.drawflow-node');
+        const nodeId        = parseInt(nodeEl.id.replace('node-', ''));
+
+        const isCollapsed = content.classList.contains('collapsed');
+
+        if (isCollapsed) {
+            // Expandir
+            content.classList.remove('collapsed');
+            miniLabel.style.display = 'none';
+            btn.textContent = '−';
+            btn.title = 'Minimizar';
+        } else {
+            // Minimizar: mostramos el nombre del personaje en la etiqueta pequeña
+            const data  = characterData[nodeId];
+            const label = data?.name || data?.id || '— sin nombre —';
+            miniLabel.textContent   = label;
+            miniLabel.style.display = 'block';
+            content.classList.add('collapsed');
+            btn.textContent = '+';
+            btn.title = 'Expandir';
+        }
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: DIÁLOGO
+    // ─────────────────────────────────────────────
+
+    function addDialogue(x = 300, y = 150) {
+        const options = buildCharacterOptions();
+        const html = `
+            <div class="node-container">
+                <div class="node-header dial-header">Diálogo</div>
+                <div class="node-content">
+                    Personaje:
+                    <select df-char_id class="char-selector" onchange="updateDialogHeader(this); refreshPreview();">
+                        <option value="narrator">Narrador</option>
+                        ${options}
+                    </select>
+                    <textarea df-text placeholder="Escribe aquí..." oninput="refreshPreview()"></textarea>
+                </div>
+            </div>
+        `;
+        return editor.addNode('dialog', 1, 1, x, y, 'dial-node', { char_id: 'narrator', text: '' }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: SHOW / HIDE
+    // ─────────────────────────────────────────────
+
+    function addShowHide(x = 300, y = 150) {
+        const options = buildCharacterOptions();
+        const html = `
+            <div class="node-container">
+                <div class="node-header show-header" id="showHideHeader">Show / Hide</div>
+                <div class="node-content">
+                    Acción:
+                    <select df-action onchange="updateShowHideHeader(this); refreshPreview();">
+                        <option value="show">show</option>
+                        <option value="hide">hide</option>
+                    </select>
+                    Personaje:
+                    <select df-char_id class="show-char-selector" onchange="updateShowHideCharHeader(this); refreshPreview();">
+                        <option value="">-- ninguno --</option>
+                        ${options}
+                    </select>
+                    Sprite <span style="opacity:0.5;font-size:10px">(solo show)</span>:
+                    <input type="text" df-sprite placeholder="happy" oninput="refreshPreview()">
+                    Posición <span style="opacity:0.5;font-size:10px">(solo show)</span>:
+                    <select df-position onchange="refreshPreview()">
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                        <option value="truecenter">True Center</option>
+                        <option value="offscreenleft">Offscreen Left</option>
+                        <option value="offscreenright">Offscreen Right</option>
+                    </select>
+                    Animación:
+                    <select df-transition onchange="refreshPreview()">
+                        <option value="">Sin animación</option>
+                        <option value="ease">ease</option>
+                        <option value="ease-in">ease-in</option>
+                        <option value="ease-out">ease-out</option>
+                        <option value="ease-in-out">ease-in-out</option>
+                        <option value="linear">linear</option>
+                    </select>
+                </div>
+            </div>
+        `;
+        return editor.addNode('showHide', 1, 1, x, y, 'show-node',
+            { action: 'show', char_id: '', sprite: '', position: 'center', transition: '' }, html);
+    }
+
+    function updateShowHideHeader(actionSelect) {
+        const header = actionSelect.closest('.node-container').querySelector('.show-header');
+        const action = actionSelect.value;
+        header.textContent = action === 'show' ? 'Show' : 'Hide';
+        // re-aplicar el color del personaje si hay uno seleccionado
+        const charSel = actionSelect.closest('.node-content').querySelector('.show-char-selector');
+        updateShowHideCharHeader(charSel);
+    }
+
+    function updateShowHideCharHeader(selector) {
+        const header     = selector.closest('.node-container').querySelector('.show-header');
+        const selectedId = selector.value;
+        if (!selectedId) {
+            header.style.background = '#27ae60';
+            header.style.color      = '#ffffff';
+            return;
+        }
+        const character = characters.find(c => c.id === selectedId);
+        if (!character) return;
+        header.style.background = character.color;
+        header.style.color      = getTextColor(character.color);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: SCENE
+    // ─────────────────────────────────────────────
+
+    function addScene(x = 300, y = 150) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header scene-header">Scene</div>
+                <div class="node-content">
+                    Fondo:
+                    <input type="text" df-background placeholder="bg bedroom" oninput="refreshPreview()"
+                        title="Nombre del background definido en Ren'Py, ej: bg bedroom">
+                    Animación:
+                    <select df-transition onchange="refreshPreview()">
+                        <option value="">Sin animación</option>
+                        <option value="dissolve">dissolve</option>
+                        <option value="fade">fade</option>
+                        <option value="pixellate">pixellate</option>
+                        <option value="blinds">blinds</option>
+                        <option value="squares">squares</option>
+                        <option value="wipeleft">wipeleft</option>
+                        <option value="wiperight">wiperight</option>
+                    </select>
+                </div>
+            </div>
+        `;
+        return editor.addNode('scene', 1, 1, x, y, 'scene-node', { background: '', transition: '' }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: PLAY / STOP
+    // ─────────────────────────────────────────────
+
+    function addPlayStop(x = 300, y = 150) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header play-header">Play / Stop</div>
+                <div class="node-content">
+                    Acción:
+                    <select df-action onchange="refreshPreview()">
+                        <option value="play">play</option>
+                        <option value="stop">stop</option>
+                        <option value="queue">queue</option>
+                    </select>
+                    Canal:
+                    <select df-channel onchange="refreshPreview()">
+                        <option value="music">music</option>
+                        <option value="sound">sound</option>
+                        <option value="voice">voice</option>
+                    </select>
+                    Ruta <span style="opacity:0.5;font-size:10px">(vacío si stop)</span>:
+                    <input type="text" df-filepath placeholder="audio/tema.mp3" oninput="refreshPreview()">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                        <input type="checkbox" df-loop onchange="refreshPreview()"> Loop
+                    </label>
+                </div>
+            </div>
+        `;
+        return editor.addNode('playStop', 1, 1, x, y, 'play-node',
+            { action: 'play', channel: 'music', filepath: '', loop: false }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: CÓDIGO GENÉRICO
+    // ─────────────────────────────────────────────
+
+    function addCode(x = 300, y = 150) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header code-header">Código</div>
+                <div class="node-content">
+                    <textarea df-code class="code-node"
+                        placeholder="# Cualquier código Ren'Py&#10;scene bg room&#10;$ variable = True"
+                        oninput="refreshPreview()"></textarea>
+                </div>
+            </div>
+        `;
+        return editor.addNode('code', 1, 1, x, y, 'code-node', { code: '' }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // COLOR DINÁMICO DE HEADERS
+    // ─────────────────────────────────────────────
+
+    function getTextColor(hexColor) {
+        const r = parseInt(hexColor.slice(1, 3), 16);
+        const g = parseInt(hexColor.slice(3, 5), 16);
+        const b = parseInt(hexColor.slice(5, 7), 16);
+        const luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+        return luminance > 0.5 ? '#000000' : '#ffffff';
+    }
+
+    function updateDialogHeader(selector) {
+        const header     = selector.closest('.node-container').querySelector('.dial-header');
+        const selectedId = selector.value;
+
+        if (selectedId === 'narrator') {
+            header.style.background = '#3498db';
+            header.style.color      = '#ffffff';
+            return;
+        }
+        const character = characters.find(c => c.id === selectedId);
+        if (!character) return;
+        header.style.background = character.color;
+        header.style.color      = getTextColor(character.color);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // SINCRONIZACIÓN DE PERSONAJES
+    // ─────────────────────────────────────────────
+
+    // Genera el HTML de opciones para los selectores de personaje
+    function buildCharacterOptions() {
+        return characters
+            .map(c => `<option value="${c.id}">${c.name || c.id}</option>`)
+            .join('');
+    }
+
+    // Reconstruye `characters` desde characterData y actualiza todos los selectores del canvas
+    function rebuildCharacters() {
+        characters = Object.entries(characterData)
+            .filter(([, d]) => d.id !== '')
+            .map(([, d]) => ({ id: d.id, name: d.name, color: d.color }));
+
+        // Selectores de Diálogo
+        document.querySelectorAll('.char-selector').forEach(sel => {
+            const val = sel.value;
+            sel.innerHTML = `<option value="narrator">Narrador</option>` + buildCharacterOptions();
+            sel.value = val;
+            updateDialogHeader(sel);
+        });
+
+        // Selectores de Show/Hide
+        document.querySelectorAll('.show-char-selector').forEach(sel => {
+            const val = sel.value;
+            sel.innerHTML = `<option value="">-- ninguno --</option>` + buildCharacterOptions();
+            sel.value = val;
+            updateShowHideCharHeader(sel);
+        });
+    }
+
+
+    // ─────────────────────────────────────────────
+    // GENERACIÓN DEL SCRIPT .RPY
+    // ─────────────────────────────────────────────
+
+    // Genera el string completo del script a partir del estado actual del canvas
+    function generateScript() {
+        const nodes = editor.export().drawflow.Home.data;
+
+        let defines = "# Personajes\n";
+        let script  = "\nlabel start:\n";
+
+        // Definiciones de personajes (desde nuestro almacén propio)
+        Object.entries(characterData).forEach(([, data]) => {
+            if (data.id) {
+                defines += `define ${data.id} = Character("${data.name}", color="${data.color}")\n`;
+            }
+        });
+
+        // Nodos en orden de creación
+        Object.values(nodes).forEach(node => {
+
+            if (node.name === 'scene') {
+                const d = node.data;
+                let line = `    scene`;
+                if (d.background)  line += ` ${d.background}`;
+                if (d.transition)  line += ` with ${d.transition}`;
+                script += line + "\n";
+            }
+
+            if (node.name === 'showHide') {
+                const d = node.data;
+                if (d.char_id) {
+                    if (d.action === 'show') {
+                        let line = `    show ${d.char_id}`;
+                        if (d.sprite)     line += ` ${d.sprite}`;
+                        if (d.position)   line += ` at ${d.position}`;
+                        if (d.transition) line += ` with ${d.transition}`;
+                        script += line + "\n";
+                    } else {
+                        let line = `    hide ${d.char_id}`;
+                        if (d.transition) line += ` with ${d.transition}`;
+                        script += line + "\n";
+                    }
+                }
+            }
+
+            if (node.name === 'playStop') {
+                const d = node.data;
+                if (d.action === 'stop') {
+                    script += `    stop ${d.channel}\n`;
+                } else {
+                    let line = `    ${d.action} ${d.channel} "${d.filepath}"`;
+                    if (d.loop) line += ` loop`;
+                    script += line + "\n";
+                }
+            }
+
+            if (node.name === 'dialog') {
+                const d       = node.data;
+                const speaker = d.char_id === 'narrator' ? '' : d.char_id + ' ';
+                script += `    ${speaker}"${d.text}"\n`;
+            }
+
+            if (node.name === 'code') {
+                const d = node.data;
+                if (d.code.trim()) {
+                    const lines = d.code.split('\n').map(l => `    ${l}`).join('\n');
+                    script += lines + "\n";
+                }
+            }
+
+        });
+
+        script += "    return\n";
+        return defines + script;
+    }
+
+
+    // ─────────────────────────────────────────────
+    // PREVISUALIZACIÓN
+    // ─────────────────────────────────────────────
+
+    function togglePreview() {
+        const panel = document.getElementById('preview-panel');
+        previewOpen = !previewOpen;
+        panel.classList.toggle('open', previewOpen);
+        if (previewOpen) refreshPreview();
+    }
+
+    // Actualiza el textarea de previsualización con el script actual
+    function refreshPreview() {
+        if (!previewOpen) return;
+        document.getElementById('preview-code').value = generateScript();
+    }
+
+    async function copyPreview() {
+        const text = generateScript();
+        try {
+            await navigator.clipboard.writeText(text);
+            const btn = event.target;
+            const original = btn.textContent;
+            btn.textContent = '✓ Copiado';
+            setTimeout(() => btn.textContent = original, 1500);
+        } catch {
+            alert('No se pudo copiar. Selecciona el texto manualmente.');
+        }
+    }
+
+
+    // ─────────────────────────────────────────────
+    // DESCARGAR
+    // ─────────────────────────────────────────────
+
+    function downloadRenPyScript() {
+        const script = generateScript();
+        const blob   = new Blob([script], { type: "text/plain" });
+        const url    = URL.createObjectURL(blob);
+        const link   = document.createElement("a");
+        link.href     = url;
+        link.download = "script.rpy";
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // LIMPIAR CANVAS
+    // ─────────────────────────────────────────────
+
+    function clearCanvas() {
+        if (!confirm('¿Limpiar el canvas? Se perderán todos los nodos.')) return;
+
+        editor.clearModuleSelected(); // borra selección actual
+        editor.import({ drawflow: { Home: { data: {} } } }); // reemplaza con canvas vacío
+
+        // Limpiamos también nuestro almacén de personajes
+        Object.keys(characterData).forEach(k => delete characterData[k]);
+        characters = [];
+
+        refreshPreview();
+    }
+</script>
+</body>
+</html>
