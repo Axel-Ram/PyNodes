@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Ren'Py Editor Pro</title>
+    <title>PyNodes</title>
 
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css">
     <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
@@ -238,7 +238,7 @@
 <body>
 
 <div class="toolbar">
-    <h2 style="color:white;margin:0;font-size:18px;margin-right:20px;">Ren'Py Canvas</h2>
+    <h2 style="color:white;margin:0;font-size:18px;margin-right:20px;">PyNodes</h2>
     <button class="toolbar-btn" onclick="togglePreview()" style="background:#2980b9;">👁 Vista previa</button>
     <button class="toolbar-btn" onclick="downloadRenPyScript()" style="background:#e67e22;">⬇ Descargar .rpy</button>
     <button class="toolbar-btn" onclick="clearCanvas()" style="background:#555;">🗑 Limpiar canvas</button>
@@ -248,18 +248,18 @@
 
     <div class="sidebar">
         <div class="sidebar-section">Personajes</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="character">👤 Personaje</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="character" style="background-color: #9B59B6;">👤 Personaje</div>
 
         <div class="sidebar-section">Escena</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="scene">🖼 Scene</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="showHide">🎭 Show / Hide</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="scene" style="background-color: #E67E22;">🖼 Scene</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="showHide" style="background-color: #27AE60;">🎭 Show / Hide</div>
 
         <div class="sidebar-section">Audio</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="playStop">🎵 Play / Stop</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="playStop" style="background-color: #E91E8C;">🎵 Play / Stop</div>
 
         <div class="sidebar-section">Narrativa</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="dialog">💬 Diálogo</div>
-        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="menu">🔀 Menú</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="dialog" style="background-color: #3498DB;">💬 Diálogo</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="menu" style="background-color: #C0392B;">🔀 Menú</div>
 
         <div class="sidebar-section">Avanzado</div>
         <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="code">📝 Código</div>
