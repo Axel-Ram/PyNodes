@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.css">
     <script src="https://cdn.jsdelivr.net/gh/jerosoler/Drawflow/dist/drawflow.min.js"></script>
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="icon.png">
 
     <style>
         /* ── Layout general ── */
@@ -233,6 +234,23 @@
             flex-shrink: 0;
         }
         .menu-remove-btn:hover { color: #e74c3c; }
+
+        /* ── Nodo Label ── */
+        .label-header   { background: #1a6b3a; }
+        .label-node { border: 1px solid #1a6b3a !important; }
+        .label-name {
+            font-size: 13px;
+            font-weight: bold;
+            color: #2ecc71;
+            padding: 4px 10px 6px;
+            font-family: monospace;
+        }
+
+        /* ── Nodo Jump ── */
+        .jump-header  { background: #16697a; }
+
+        /* ── Nodo Variable ── */
+        .var-header   { background: #7d5a00; }
     </style>
 </head>
 <body>
@@ -240,8 +258,11 @@
 <div class="toolbar">
     <h2 style="color:white;margin:0;font-size:18px;margin-right:20px;">PyNodes</h2>
     <button class="toolbar-btn" onclick="togglePreview()" style="background:#2980b9;">👁 Vista previa</button>
-    <button class="toolbar-btn" onclick="downloadRenPyScript()" style="background:#e67e22;">⬇ Descargar .rpy</button>
-    <button class="toolbar-btn" onclick="clearCanvas()" style="background:#555;">🗑 Limpiar canvas</button>
+    <button class="toolbar-btn" onclick="exportCanvas()" style="background:#27ae60;" title="Descarga el canvas como archivo .json para importarlo después">💾 Guardar canvas</button>
+    <button class="toolbar-btn" onclick="document.getElementById('import-input').click()" style="background:#8e44ad;" title="Carga un canvas guardado anteriormente">📂 Cargar canvas</button>
+    <input type="file" id="import-input" accept=".json" style="display:none" onchange="importCanvas(event)">
+    <button class="toolbar-btn" onclick="clearCanvas()" style="background:#555;">🗑 Limpiar</button>
+    <span id="save-indicator" style="color:#555;font-size:11px;margin-left:auto;font-style:italic;">sesión guardada automáticamente</span>
 </div>
 
 <div class="main-container">
@@ -260,6 +281,11 @@
         <div class="sidebar-section">Narrativa</div>
         <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="dialog" style="background-color: #3498DB;">💬 Diálogo</div>
         <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="menu" style="background-color: #C0392B;">🔀 Menú</div>
+
+        <div class="sidebar-section">Control de flujo</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="label" style="background-color: #1a6b3a;">🏷 Label</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="jump" style="background-color: #16697a;">↪ Jump</div>
+        <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="variable" style="background-color: #7d5a00;">📦 Variable</div>
 
         <div class="sidebar-section">Avanzado</div>
         <div class="drag-item" draggable="true" ondragstart="drag(event)" data-node="code">📝 Código</div>
@@ -294,39 +320,274 @@
     // Almacén propio para datos de personajes, independiente de Drawflow.
     const characterData = {};
 
+    // Nodo copiado para Ctrl+C / Ctrl+V
+    let copiedNodeData = null;
+
+    // Devuelve el ID del nodo actualmente seleccionado en el canvas,
+    // leyendo directamente del DOM porque editor.node_selected no es confiable.
+    function getSelectedNodeId() {
+        const el = container.querySelector('.drawflow-node.selected');
+        if (!el) return null;
+        return parseInt(el.id.replace('node-', ''));
+    }
+
     // ── Eventos de Drawflow ──
+    editor.on('connectionCreated', () => { saveSession(); refreshPreview(); });
+    editor.on('connectionRemoved', () => { saveSession(); refreshPreview(); });
+    editor.on('nodeRemoved',       (id) => { delete characterData[id]; saveSession(); refreshPreview(); });
+    editor.on('nodeMoved',         () => saveSession());
 
-    // Refrescar preview al crear/eliminar conexiones o nodos
-    editor.on('connectionCreated', () => refreshPreview());
-    editor.on('connectionRemoved', () => refreshPreview());
-    editor.on('nodeRemoved',       () => refreshPreview());
+    // Snapshot inicial (para que el primer Ctrl+Z pueda volver al estado vacío)
+    setTimeout(() => captureSnapshot(), 200);
 
-    // ── Teclado: Delete / Backspace borran el elemento seleccionado ──
+    // ── Teclado ──
     document.addEventListener('keydown', (ev) => {
-        // No actuar si el foco está en un input, select o textarea
         const tag = document.activeElement?.tagName;
-        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+        const inField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
 
-        if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        // Delete / Backspace — borrar nodo o conexión seleccionada
+        if ((ev.key === 'Delete' || ev.key === 'Backspace') && !inField) {
             ev.preventDefault();
-            // Drawflow expone qué está seleccionado en estas propiedades
-            if (editor.node_selected) {
-                editor.removeNodeId(`node-${editor.node_selected}`);
-            } else if (editor.connection_selected) {
-                editor.removeSeletedConnection();
+            const selConn = container.querySelector('.connection.selected');
+            if (selConn) {
+                deleteSelectedConnection(selConn);
+            } else {
+                const nodeId = getSelectedNodeId();
+                if (nodeId) editor.removeNodeId(`node-${nodeId}`);
             }
+            return;
+        }
+
+        // Ctrl+Z — deshacer
+        if (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !inField) {
+            ev.preventDefault();
+            undo();
+            return;
+        }
+
+        // Ctrl+Y / Ctrl+Shift+Z — rehacer
+        if ((ev.key === 'y' && (ev.ctrlKey || ev.metaKey) && !inField) ||
+            (ev.key === 'z' && (ev.ctrlKey || ev.metaKey) && ev.shiftKey && !inField)) {
+            ev.preventDefault();
+            redo();
+            return;
+        }
+
+        // Ctrl+C — copiar nodo seleccionado
+        if (ev.key === 'c' && (ev.ctrlKey || ev.metaKey) && !inField) {
+            ev.preventDefault();
+            const nodeId = getSelectedNodeId();
+            if (!nodeId) return;
+
+            const nodes = editor.export().drawflow.Home.data;
+            const node  = nodes[nodeId];
+            if (!node) return;
+
+            copiedNodeData = {
+                name:      node.name,
+                domValues: captureDomValues(nodeId),
+                charData:  characterData[nodeId] ? { ...characterData[nodeId] } : null,
+                menuCount: menuOptionCount[nodeId] || null,
+            };
+
+            // Feedback visual: parpadeo del nodo
+            const nodeEl = document.querySelector(`#node-${nodeId}`);
+            if (nodeEl) {
+                nodeEl.style.outline = '2px solid #27ae60';
+                setTimeout(() => nodeEl.style.outline = '', 400);
+            }
+            return;
+        }
+
+        // Ctrl+V — pegar nodo copiado
+        if (ev.key === 'v' && (ev.ctrlKey || ev.metaKey) && !inField) {
+            ev.preventDefault();
+            if (!copiedNodeData) return;
+            pasteNode(copiedNodeData);
+            return;
         }
     });
 
+    // Captura los valores actuales de los inputs df-* de un nodo directamente del DOM
+    function captureDomValues(nodeId) {
+        const nodeEl = document.querySelector(`#node-${nodeId}`);
+        if (!nodeEl) return {};
+        const values = {};
+        nodeEl.querySelectorAll('[df-id],[df-name],[df-color],[df-char_id],[df-text],[df-action],[df-sprite],[df-position],[df-transition],[df-background],[df-filepath],[df-channel],[df-loop],[df-code]').forEach(el => {
+            const attr = Array.from(el.attributes).find(a => a.name.startsWith('df-'));
+            if (attr) values[attr.name] = el.type === 'checkbox' ? el.checked : el.value;
+        });
+        // Para menú, capturamos los textos de las opciones
+        nodeEl.querySelectorAll('.menu-option input').forEach((inp, i) => {
+            values[`menu-option-${i}`] = inp.value;
+        });
+        return values;
+    }
+
+    // Pega un nodo copiado centrado en la posición actual del mouse
+    function pasteNode(data) {
+        // Creamos el nodo primero en la posición del mouse
+        const pos_x = lastMouseCanvasX;
+        const pos_y = lastMouseCanvasY;
+
+        let newId;
+        if (data.name === 'character_def') newId = addCharacterDefinition(pos_x, pos_y);
+        if (data.name === 'dialog')        newId = addDialogue(pos_x, pos_y);
+        if (data.name === 'showHide')      newId = addShowHide(pos_x, pos_y);
+        if (data.name === 'scene')         newId = addScene(pos_x, pos_y);
+        if (data.name === 'playStop')      newId = addPlayStop(pos_x, pos_y);
+        if (data.name === 'code')          newId = addCode(pos_x, pos_y);
+        if (data.name === 'menu')          newId = addMenu(pos_x, pos_y);
+        if (data.name === 'label')         newId = addLabel(pos_x, pos_y);
+        if (data.name === 'jump')          newId = addJump(pos_x, pos_y);
+        if (data.name === 'variable')      newId = addVariable(pos_x, pos_y);
+        if (!newId) return;
+
+        setTimeout(() => {
+            const nodeEl = document.querySelector(`#node-${newId}`);
+            if (!nodeEl) return;
+
+            // Centramos el nodo en el cursor igual que al arrastrar
+            const centeredX = pos_x - nodeEl.offsetWidth  / 2;
+            const centeredY = pos_y - nodeEl.offsetHeight / 2;
+            editor.drawflow.drawflow.Home.data[newId].pos_x = centeredX;
+            editor.drawflow.drawflow.Home.data[newId].pos_y = centeredY;
+            nodeEl.style.left = centeredX + "px";
+            nodeEl.style.top  = centeredY + "px";
+
+            // Restaurar inputs df-*
+            Object.entries(data.domValues).forEach(([attr, value]) => {
+                if (attr.startsWith('menu-option-')) return;
+                const el = nodeEl.querySelector(`[${attr}]`);
+                if (!el) return;
+                if (el.type === 'checkbox') el.checked = value;
+                else el.value = value;
+                el.dispatchEvent(new Event('change'));
+            });
+
+            // Restaurar opciones del menú
+            if (data.name === 'menu') {
+                const list = nodeEl.querySelector('.menu-options-list');
+                if (list) {
+                    list.querySelectorAll('.menu-option input').forEach((inp, i) => {
+                        const saved = data.domValues[`menu-option-${i}`];
+                        if (saved !== undefined) inp.value = saved;
+                    });
+                }
+            }
+
+            // Restaurar characterData si es un personaje
+            if (data.charData) {
+                characterData[newId] = { ...data.charData, locked: false };
+                rebuildCharacters();
+            }
+
+            saveSession();
+            refreshPreview();
+        }, 50);
+    }
+
     // ── Doble click en conexión: borrarla ──
-    // Drawflow no tiene evento nativo para doble click en conexiones,
-    // así que lo escuchamos en el SVG del canvas
     container.addEventListener('dblclick', (ev) => {
         const path = ev.target.closest('.main-path');
         if (!path) return;
-        // Seleccionamos la conexión y la borramos
-        path.parentElement.classList.add('selected');
-        editor.removeSeletedConnection();
+        const connSvg = path.closest('svg.connection');
+        if (connSvg) deleteSelectedConnection(connSvg);
+    });
+
+    // Borra una conexión a partir del elemento SVG que la representa.
+    // Drawflow guarda los datos de la conexión en las clases CSS del SVG:
+    // node_out_node-X, node_in_node-Y, output_N, input_N
+    function deleteSelectedConnection(connEl) {
+        const classes = Array.from(connEl.classList);
+        let fromId, toId, fromOutput, toInput;
+        classes.forEach(c => {
+            if (c.startsWith('node_out_node-')) fromId     = c.replace('node_out_node-', '');
+            if (c.startsWith('node_in_node-'))  toId       = c.replace('node_in_node-', '');
+            if (c.startsWith('output_'))        fromOutput = c;
+            if (c.startsWith('input_'))         toInput    = c;
+        });
+        if (fromId && toId && fromOutput && toInput) {
+            editor.removeSingleConnection(fromId, toId, fromOutput, toInput);
+        }
+    }
+
+    // ── Autoguardado en localStorage ──
+
+    // Guarda el estado actual del canvas + characterData en localStorage.
+    // Se llama en cada cambio relevante con un pequeño debounce.
+    let saveTimer = null;
+    function saveSession() {
+        // Mostramos que hay cambios sin guardar
+        const indicator = document.getElementById('save-indicator');
+        if (indicator) { indicator.style.color = '#e67e22'; indicator.textContent = '● cambios sin guardar'; }
+
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+            try {
+                const state = {
+                    drawflow: editor.export(),
+                    characterData: characterData,
+                    menuOptionCount: menuOptionCount,
+                };
+                localStorage.setItem('renpy_session', JSON.stringify(state));
+                if (indicator) { indicator.style.color = '#555'; indicator.textContent = '✓ sesión guardada'; }
+            } catch (e) {
+                console.warn('No se pudo guardar la sesión:', e);
+                if (indicator) { indicator.style.color = '#e74c3c'; indicator.textContent = '⚠ error al guardar'; }
+            }
+        }, 500);
+    }
+
+    // Restaura el estado guardado al cargar la página.
+    // Los nodos se reconstruyen a través de editor.import() pero los
+    // datos extra (characterData, menuOptionCount, valores DOM) los restauramos a mano.
+    function loadSession() {
+        const raw = localStorage.getItem('renpy_session');
+        if (!raw) return;
+
+        try {
+            const state = JSON.parse(raw);
+
+            // Restauramos characterData y menuOptionCount primero
+            if (state.characterData) {
+                Object.entries(state.characterData).forEach(([k, v]) => {
+                    characterData[k] = v;
+                });
+            }
+            if (state.menuOptionCount) {
+                Object.entries(state.menuOptionCount).forEach(([k, v]) => {
+                    menuOptionCount[k] = v;
+                });
+            }
+
+            // Importamos el canvas — esto recrea los nodos en el DOM
+            if (state.drawflow) {
+                editor.import(state.drawflow);
+            }
+
+            // Después de que Drawflow renderice los nodos, reconstruimos los personajes
+            setTimeout(() => {
+                rebuildCharacters();
+                refreshPreview();
+            }, 100);
+
+        } catch (e) {
+            console.warn('No se pudo restaurar la sesión:', e);
+        }
+    }
+
+    // Intentamos cargar la sesión anterior al iniciar
+    loadSession();
+
+    // ── Rastreo de posición del mouse en el canvas ──
+    // Lo usamos para pegar nodos exactamente donde está el cursor (Ctrl+V)
+    let lastMouseCanvasX = 300;
+    let lastMouseCanvasY = 200;
+    container.addEventListener('mousemove', (ev) => {
+        const rect = container.getBoundingClientRect();
+        lastMouseCanvasX = (ev.clientX - rect.left - editor.canvas_x) / editor.zoom;
+        lastMouseCanvasY = (ev.clientY - rect.top  - editor.canvas_y) / editor.zoom;
     });
 
 
@@ -363,6 +624,9 @@
         if (nodeType === 'playStop')  nodeId = addPlayStop(pos_x, pos_y);
         if (nodeType === 'code')      nodeId = addCode(pos_x, pos_y);
         if (nodeType === 'menu')      nodeId = addMenu(pos_x, pos_y);
+        if (nodeType === 'label')     nodeId = addLabel(pos_x, pos_y);
+        if (nodeType === 'jump')      nodeId = addJump(pos_x, pos_y);
+        if (nodeType === 'variable')  nodeId = addVariable(pos_x, pos_y);
 
         const isScriptNode = nodeType !== 'character';
 
@@ -370,7 +634,7 @@
             const nodeEl = document.querySelector(`#node-${nodeId}`);
             if (!nodeEl) return;
 
-            // Centramos el nodo en el cursor
+            // Centramos el nodo en el cursor (igual que el drag original)
             const centeredX = pos_x - nodeEl.offsetWidth  / 2;
             const centeredY = pos_y - nodeEl.offsetHeight / 2;
 
@@ -379,12 +643,10 @@
             nodeEl.style.left = centeredX + "px";
             nodeEl.style.top  = centeredY + "px";
 
-            // Lógica corregida para la auto-inserción
             if (isScriptNode) {
                 if (droppedOnPath) {
                     insertNodeInPath(nodeId.toString(), droppedOnPath);
                 } else {
-                    // Fallback matemático por si soltó cerca de la línea pero no encima
                     tryInsertBetween(nodeId.toString(), pos_x, pos_y);
                 }
             }
@@ -536,9 +798,8 @@
 
         rebuildCharacters();
         refreshPreview();
+        saveSession();
     }
-
-    // Bloquear / desbloquear el campo ID
     function toggleCharacterLock(btn) {
         const nodeEl  = btn.closest('.drawflow-node');
         const nodeId  = parseInt(nodeEl.id.replace('node-', ''));
@@ -789,9 +1050,10 @@
             <div class="node-container">
                 <div class="node-header menu-header">Menú</div>
                 <div class="node-content">
-                    <div style="font-size:11px;color:#888;margin-bottom:4px">
-                        Cada opción tiene su propia salida →
-                    </div>
+                    Pregunta:
+                    <input type="text" df-question placeholder="¿Qué quieres hacer?" oninput="refreshPreview()"
+                        title="Texto que aparece antes de las opciones (opcional)">
+                    <div style="font-size:11px;color:#888;margin:4px 0 2px">Opciones →</div>
                     <div class="menu-options-list">
                         ${optionsHtml}
                     </div>
@@ -857,63 +1119,131 @@
         refreshPreview();
     }
 
-    // Genera el código Ren'Py para el nodo menú y sus ramas recursivamente
+    // Genera el código Ren'Py para el nodo menú y sus ramas.
+    // Soporta convergencia: si todas las ramas terminan en el mismo nodo,
+    // ese nodo se genera DESPUÉS del bloque menu: (no dentro de cada rama).
     function menuBranchToScript(menuNodeId, nodes, indent, visited) {
-        const nodeEl = document.querySelector(`#node-${menuNodeId}`);
-        if (!nodeEl) return '';
+        const nodeEl   = document.querySelector(`#node-${menuNodeId}`);
+        const menuNode = nodes[menuNodeId];
+        if (!nodeEl || !menuNode) return '';
 
         const rows = nodeEl.querySelectorAll('.menu-option');
-        const menuNode = nodes[menuNodeId];
+
+        // Recopilamos los nodos de inicio de cada rama
+        const branchStarts = [];
+        rows.forEach((row, i) => {
+            const outputKey   = `output_${i + 1}`;
+            const connections = menuNode.outputs?.[outputKey]?.connections || [];
+            branchStarts.push(connections.length > 0 ? Number(connections[0].node) : null);
+        });
+
+        // Detectamos el nodo de convergencia: el nodo al que llegan TODAS las ramas.
+        // Recorremos cada rama hasta su fin y vemos si comparten el último nodo destino.
+        const convergeId = findConvergenceNode(branchStarts, nodes);
+
         let script = `${indent}menu:\n`;
 
-        // Cada fila corresponde a una salida (output_1, output_2, ...)
+        // Si hay una pregunta, la añadimos como primera línea del bloque menu:
+        // En Ren'Py esto muestra el texto al jugador antes de presentar las opciones
+        const questionEl = nodeEl.querySelector('[df-question]');
+        const question   = questionEl?.value?.trim();
+        if (question) {
+            script = `${indent}menu:\n${indent}    "${question}":\n${indent}        pass\n`;
+            // Reescribimos correctamente: la pregunta va dentro del menu: como narración
+            script = `${indent}menu "${question}":\n`;
+        }
+
         rows.forEach((row, i) => {
-            const label      = row.querySelector('input')?.value || `Opción ${i + 1}`;
-            const outputKey  = `output_${i + 1}`;
-            const outputData = menuNode?.outputs?.[outputKey];
-            const connections = outputData?.connections || [];
+            const label   = row.querySelector('input')?.value || `Opción ${i + 1}`;
+            const startId = branchStarts[i];
 
             script += `${indent}    "${label}":\n`;
 
-            if (connections.length > 0) {
-                // Seguimos la cadena conectada a esta salida
-                const branchStartId = Number(connections[0].node);
-                script += chainToScript(branchStartId, nodes, indent + '        ', visited);
+            if (startId !== null) {
+                // Generamos la rama, deteniéndonos en el nodo de convergencia
+                const branchVisited = new Set(visited);
+                if (convergeId !== null) branchVisited.add(convergeId); // no entrar al nodo de convergencia
+                const branchScript = chainToScript(startId, nodes, indent + '        ', branchVisited);
+                script += branchScript || `${indent}        pass\n`;
             } else {
                 script += `${indent}        pass\n`;
             }
         });
 
+        // Si hay convergencia, continuamos desde ese nodo después del menu:
+        if (convergeId !== null) {
+            script += chainToScript(convergeId, nodes, indent, new Set(visited));
+        }
+
         return script;
     }
 
-    // Convierte un nodo y la cadena que le sigue en código Ren'Py
+    // Dado un array de nodos de inicio de ramas, encuentra el nodo donde convergen.
+    // Estrategia: para cada rama, calculamos todos los nodos que visita.
+    // El primer nodo que aparece en TODAS las ramas es el nodo de convergencia.
+    function findConvergenceNode(branchStarts, nodes) {
+        if (branchStarts.length === 0) return null;
+
+        // Si alguna rama no tiene inicio, no puede haber convergencia total
+        if (branchStarts.some(id => id === null)) return null;
+
+        // Calculamos la cadena de IDs de cada rama (en orden)
+        const branchChains = branchStarts.map(startId => {
+            const chain   = [];
+            const visited = new Set();
+            let current   = startId;
+            while (current && !visited.has(current) && chain.length < 200) {
+                visited.add(current);
+                chain.push(current);
+                const node        = nodes[current];
+                const firstOutput = Object.values(node?.outputs || {})[0];
+                const conns       = firstOutput?.connections || [];
+                current = conns.length > 0 ? Number(conns[0].node) : null;
+                if (node?.name === 'menu') break; // no atravesamos sub-menús
+            }
+            // El "siguiente" al final de la cadena es el nodo donde converge
+            if (current && !visited.has(current)) chain.push(current);
+            return chain;
+        });
+
+        // Buscamos el primer nodo de la primera rama que también aparece en todas las demás
+        for (const candidateId of branchChains[0]) {
+            if (branchChains.every(chain => chain.includes(candidateId))) {
+                // Nos aseguramos de que no sea el propio nodo de inicio de alguna rama
+                if (!branchStarts.includes(candidateId)) {
+                    return candidateId;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // Recorre la cadena de nodos a partir de startId generando código Ren'Py.
+    // visited evita ciclos infinitos.
     function chainToScript(startId, nodes, indent = '    ', visited = new Set()) {
-        let script = '';
+        let script  = '';
         let current = startId;
 
         while (current && !visited.has(current)) {
             visited.add(current);
-            const node   = nodes[current];
+            const node = nodes[current];
             if (!node) break;
 
             if (node.name === 'menu') {
-                script += menuBranchToScript(current, nodes, indent, visited);
+                // El menú maneja su propia convergencia internamente
+                script += menuBranchToScript(current, nodes, indent, new Set(visited));
+                // menuBranchToScript ya continúa la cadena desde el nodo de convergencia
+                break;
             } else {
-                // Para el resto de nodos usamos nodeToLines pero con indent personalizado
                 const lines = nodeToLines(current, nodes);
-                // nodeToLines devuelve líneas con 4 espacios, las reemplazamos por indent
                 script += lines.replace(/^    /gm, indent);
             }
 
-            // Siguiente nodo en la cadena lineal (primer output)
-            const outputs     = node.outputs || {};
-            const firstOutput = Object.values(outputs)[0];
+            // Avanzamos al siguiente nodo
+            const firstOutput = Object.values(node.outputs || {})[0];
             const conns       = firstOutput?.connections || [];
             current = conns.length > 0 ? Number(conns[0].node) : null;
-
-            // Si el nodo era un menú, ya recorrimos las ramas, no seguimos por output_1
-            if (node.name === 'menu') break;
         }
 
         return script;
@@ -921,8 +1251,177 @@
 
 
     // ─────────────────────────────────────────────
-    // COLOR DINÁMICO DE HEADERS
+    // NODO: LABEL
     // ─────────────────────────────────────────────
+    // Un Label es el punto de inicio de una cadena de nodos.
+    // Solo tiene salida (0 entradas), igual que label start: en Ren'Py.
+    // El generador busca todos los Labels del canvas y genera un bloque por cada uno.
+
+    function addLabel(x = 100, y = 100) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header label-header">
+                    <span>🏷 Label</span>
+                </div>
+                <div class="node-content">
+                    Nombre:
+                    <input type="text" df-labelname placeholder="start" oninput="refreshPreview()"
+                        title="Nombre del label en Ren'Py. 'start' es el punto de entrada principal.">
+                </div>
+            </div>
+        `;
+        // Sin entradas, 1 salida — es siempre el inicio de una cadena
+        return editor.addNode('label', 0, 1, x, y, 'label-node', { labelname: '' }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: JUMP
+    // ─────────────────────────────────────────────
+    // Salta a otro label. Termina la cadena actual (no tiene salida).
+    // El label destino puede ser cualquier Label del canvas u otro externo.
+
+    function addJump(x = 300, y = 150) {
+        // Construimos las opciones con los labels definidos en el canvas
+        const labelOptions = buildLabelOptions();
+        const html = `
+            <div class="node-container">
+                <div class="node-header jump-header">↪ Jump</div>
+                <div class="node-content">
+                    Destino:
+                    <select df-target class="jump-target-selector" onchange="refreshPreview()">
+                        <option value="">-- seleccionar --</option>
+                        ${labelOptions}
+                    </select>
+                    <span style="font-size:10px;color:#888">o escribe un label externo:</span>
+                    <input type="text" df-target_custom placeholder="nombre_label_externo" oninput="refreshPreview()">
+                </div>
+            </div>
+        `;
+        // 1 entrada, 0 salidas — termina la cadena
+        return editor.addNode('jump', 1, 0, x, y, 'jump-node', { target: '', target_custom: '' }, html);
+    }
+
+    // Genera las opciones del selector de labels a partir de los nodos label del canvas
+    function buildLabelOptions() {
+        const nodes = editor.export().drawflow.Home.data;
+        return Object.values(nodes)
+            .filter(n => n.name === 'label')
+            .map(n => {
+                const nodeEl = document.querySelector(`#node-${n.id}`);
+                const name   = nodeEl?.querySelector('[df-labelname]')?.value || n.data.labelname || '';
+                return name ? `<option value="${name}">${name}</option>` : '';
+            })
+            .join('');
+    }
+
+    // Actualiza los selectores de jump cuando cambian los labels del canvas
+    function rebuildJumpSelectors() {
+        const labelOptions = buildLabelOptions();
+        document.querySelectorAll('.jump-target-selector').forEach(sel => {
+            const currentVal = sel.value;
+            sel.innerHTML = `<option value="">-- seleccionar --</option>` + labelOptions;
+            sel.value = currentVal;
+        });
+    }
+
+
+    // ─────────────────────────────────────────────
+    // NODO: VARIABLE
+    // ─────────────────────────────────────────────
+    // Ejecuta una operación sobre una variable Python: asignar, incrementar, etc.
+    // Genera: $ nombre operador valor
+
+    function addVariable(x = 300, y = 150) {
+        const html = `
+            <div class="node-container">
+                <div class="node-header var-header">📦 Variable</div>
+                <div class="node-content">
+                    Variable:
+                    <input type="text" df-varname placeholder="puntos" oninput="refreshPreview()"
+                        title="Nombre de la variable Python">
+                    Operación:
+                    <select df-operator onchange="refreshPreview()">
+                        <option value="=">=&nbsp;&nbsp; (asignar)</option>
+                        <option value="+=">+= (sumar)</option>
+                        <option value="-=">-= (restar)</option>
+                        <option value="*=">*= (multiplicar)</option>
+                        <option value="not ">not (invertir booleano)</option>
+                    </select>
+                    Valor:
+                    <input type="text" df-varvalue placeholder="True / 1 / &quot;texto&quot;" oninput="refreshPreview()"
+                        title="Valor a asignar. Usa comillas para strings, True/False para booleanos.">
+                </div>
+            </div>
+        `;
+        return editor.addNode('variable', 1, 1, x, y, 'var-node', { varname: '', operator: '=', varvalue: '' }, html);
+    }
+
+
+    // ─────────────────────────────────────────────
+    // UNDO / REDO
+    // ─────────────────────────────────────────────
+    // Implementamos un historial manual de snapshots del estado completo del canvas.
+    // Drawflow no tiene undo/redo nativo, así que guardamos el estado cada vez que
+    // ocurre un cambio relevante y lo restauramos al hacer Ctrl+Z / Ctrl+Y.
+
+    const undoStack = []; // estados pasados
+    const redoStack = []; // estados futuros (se llenan al hacer undo)
+    const MAX_HISTORY = 50;
+    let isUndoRedoing = false; // flag para no guardar snapshot durante una restauración
+
+    function captureSnapshot() {
+        if (isUndoRedoing) return;
+        const snapshot = {
+            drawflow:       JSON.parse(JSON.stringify(editor.export())),
+            characterData:  JSON.parse(JSON.stringify(characterData)),
+            menuOptionCount: JSON.parse(JSON.stringify(menuOptionCount)),
+        };
+        undoStack.push(snapshot);
+        if (undoStack.length > MAX_HISTORY) undoStack.shift(); // limitar memoria
+        redoStack.length = 0; // cualquier cambio nuevo borra el redo
+    }
+
+    function applySnapshot(snapshot) {
+        isUndoRedoing = true;
+
+        // Restaurar datos extra
+        Object.keys(characterData).forEach(k => delete characterData[k]);
+        Object.keys(menuOptionCount).forEach(k => delete menuOptionCount[k]);
+        Object.entries(snapshot.characterData).forEach(([k, v]) => { characterData[k] = v; });
+        Object.entries(snapshot.menuOptionCount).forEach(([k, v]) => { menuOptionCount[k] = v; });
+
+        // Restaurar el canvas
+        editor.import(snapshot.drawflow);
+
+        setTimeout(() => {
+            rebuildCharacters();
+            rebuildJumpSelectors();
+            refreshPreview();
+            saveSession();
+            isUndoRedoing = false;
+        }, 50);
+    }
+
+    function undo() {
+        if (undoStack.length < 2) return; // necesitamos al menos estado actual + uno anterior
+        const current = undoStack.pop();
+        redoStack.push(current);
+        applySnapshot(undoStack[undoStack.length - 1]);
+    }
+
+    function redo() {
+        if (redoStack.length === 0) return;
+        const next = redoStack.pop();
+        undoStack.push(next);
+        applySnapshot(next);
+    }
+
+    // Capturamos snapshot en cada evento relevante de Drawflow
+    editor.on('nodeCreated',        () => captureSnapshot());
+    editor.on('nodeRemoved',        () => captureSnapshot());
+    editor.on('connectionCreated',  () => captureSnapshot());
+    editor.on('connectionRemoved',  () => captureSnapshot());
 
     function getTextColor(hexColor) {
         const r = parseInt(hexColor.slice(1, 3), 16);
@@ -980,6 +1479,9 @@
             sel.value = val;
             updateShowHideCharHeader(sel);
         });
+
+        // Actualizamos también los selectores de jump por si cambiaron los labels
+        rebuildJumpSelectors();
     }
 
 
@@ -1046,12 +1548,84 @@
             if (!code.trim()) return '';
             return code.split('\n').map(l => `    ${l}`).join('\n') + '\n';
         }
+        if (node.name === 'jump') {
+            // Prioriza el campo de texto libre sobre el selector
+            const custom = v('df-target_custom').trim();
+            const target = custom || v('df-target');
+            if (!target) return '    # jump (sin destino)\n';
+            return `    jump ${target}\n`;
+        }
+        if (node.name === 'variable') {
+            const name     = v('df-varname').trim();
+            const operator = v('df-operator') || '=';
+            const value    = v('df-varvalue').trim();
+            if (!name) return '';
+            // El operador "not " es especial: $ var = not var
+            if (operator === 'not ') return `    $ ${name} = not ${name}\n`;
+            return `    $ ${name} ${operator} ${value}\n`;
+        }
         return '';
     }
 
-    // Encuentra el nodo raíz de la cadena (el que no tiene conexiones entrantes)
-    function findRootNode(nodes) {
-        const scriptTypes = new Set(['scene','showHide','playStop','dialog','code','menu']);
+    // Genera el string completo del script .rpy
+    // Si hay nodos Label en el canvas, cada uno genera su propio bloque label X:.
+    // Si no hay Labels, busca el nodo raíz como antes (compatibilidad hacia atrás).
+    function generateScript() {
+        const nodes = editor.export().drawflow.Home.data;
+
+        let defines = "# Personajes\n";
+        let script  = "";
+
+        Object.entries(characterData).forEach(([, data]) => {
+            if (data.id) {
+                defines += `define ${data.id} = Character("${data.name}", color="${data.color}")\n`;
+            }
+        });
+
+        // Buscamos todos los nodos Label del canvas
+        const labelIds = Object.keys(nodes)
+            .map(Number)
+            .filter(id => nodes[id].name === 'label');
+
+        if (labelIds.length > 0) {
+            // Modo multi-label: cada Label genera su propio bloque
+            labelIds.forEach(labelId => {
+                const nodeEl   = document.querySelector(`#node-${labelId}`);
+                const labelName = nodeEl?.querySelector('[df-labelname]')?.value?.trim()
+                    || nodes[labelId]?.data?.labelname
+                    || 'sin_nombre';
+
+                script += `\nlabel ${labelName}:\n`;
+
+                // Seguimos la cadena desde la salida del Label
+                const firstOutput = Object.values(nodes[labelId].outputs || {})[0];
+                const conns       = firstOutput?.connections || [];
+                if (conns.length > 0) {
+                    script += chainToScript(Number(conns[0].node), nodes);
+                } else {
+                    script += "    pass\n";
+                }
+
+                script += "    return\n";
+            });
+        } else {
+            // Modo legado: un solo label start: desde el nodo raíz
+            script += "\nlabel start:\n";
+            const rootId = findLegacyRootNode(nodes);
+            if (rootId == null) {
+                script += "    # (conecta los nodos para generar el guion)\n";
+            } else {
+                script += chainToScript(rootId, nodes);
+            }
+            script += "    return\n";
+        }
+
+        return defines + script;
+    }
+
+    // Busca el nodo raíz en modo legado (sin Labels): el nodo script sin entradas
+    function findLegacyRootNode(nodes) {
+        const scriptTypes = new Set(['scene','showHide','playStop','dialog','code','menu','jump','variable']);
         const allIds      = Object.keys(nodes).map(Number);
         const scriptIds   = allIds.filter(id => scriptTypes.has(nodes[id].name));
 
@@ -1064,30 +1638,6 @@
 
         const roots = scriptIds.filter(id => !hasIncoming.has(id));
         return roots.length > 0 ? roots[0] : null;
-    }
-
-    // Genera el string completo del script .rpy
-    function generateScript() {
-        const nodes = editor.export().drawflow.Home.data;
-
-        let defines = "# Personajes\n";
-        let script  = "\nlabel start:\n";
-
-        Object.entries(characterData).forEach(([, data]) => {
-            if (data.id) {
-                defines += `define ${data.id} = Character("${data.name}", color="${data.color}")\n`;
-            }
-        });
-
-        const rootId = findRootNode(nodes);
-        if (rootId == null) {
-            script += "    # (conecta los nodos para generar el guion)\n";
-        } else {
-            script += chainToScript(rootId, nodes);
-        }
-
-        script += "    return\n";
-        return defines + script;
     }
 
 
@@ -1164,19 +1714,87 @@
 
 
     // ─────────────────────────────────────────────
+    // EXPORTAR / IMPORTAR CANVAS
+    // ─────────────────────────────────────────────
+
+    // Descarga el canvas completo como archivo .json que se puede importar después.
+    // Incluye los datos de Drawflow + characterData + menuOptionCount.
+    function exportCanvas() {
+        const state = {
+            version:        1,
+            drawflow:       editor.export(),
+            characterData:  characterData,
+            menuOptionCount: menuOptionCount,
+        };
+        const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+        const url  = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href     = url;
+        link.download = 'renpy-canvas.json';
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+    // Carga un canvas desde un archivo .json exportado anteriormente.
+    function importCanvas(ev) {
+        const file = ev.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const state = JSON.parse(e.target.result);
+
+                // Limpiamos el estado actual
+                Object.keys(characterData).forEach(k => delete characterData[k]);
+                Object.keys(menuOptionCount).forEach(k => delete menuOptionCount[k]);
+                characters = [];
+
+                // Restauramos los datos extra
+                if (state.characterData) {
+                    Object.entries(state.characterData).forEach(([k, v]) => { characterData[k] = v; });
+                }
+                if (state.menuOptionCount) {
+                    Object.entries(state.menuOptionCount).forEach(([k, v]) => { menuOptionCount[k] = v; });
+                }
+
+                // Importamos el canvas en Drawflow
+                editor.import(state.drawflow);
+
+                // Esperamos a que el DOM renderice los nodos y luego reconstruimos
+                setTimeout(() => {
+                    rebuildCharacters();
+                    saveSession();
+                    refreshPreview();
+                }, 100);
+
+            } catch (err) {
+                alert('El archivo no es un canvas válido.');
+                console.error(err);
+            }
+        };
+        reader.readAsText(file);
+
+        // Limpiamos el input para que se pueda volver a cargar el mismo archivo
+        ev.target.value = '';
+    }
+
+
+    // ─────────────────────────────────────────────
     // LIMPIAR CANVAS
     // ─────────────────────────────────────────────
 
     function clearCanvas() {
         if (!confirm('¿Limpiar el canvas? Se perderán todos los nodos.')) return;
 
-        editor.clearModuleSelected(); // borra selección actual
-        editor.import({ drawflow: { Home: { data: {} } } }); // reemplaza con canvas vacío
+        editor.clearModuleSelected();
+        editor.import({ drawflow: { Home: { data: {} } } });
 
-        // Limpiamos también nuestro almacén de personajes
         Object.keys(characterData).forEach(k => delete characterData[k]);
+        Object.keys(menuOptionCount).forEach(k => delete menuOptionCount[k]);
         characters = [];
 
+        localStorage.removeItem('renpy_session');
         refreshPreview();
     }
 </script>
