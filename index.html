@@ -22,6 +22,7 @@
     <meta name="keywords" content="Renpy, Ren'Py, Visual Novel, Tool, Renpy Tool, Renpy Script Editor">
     <meta name="author" content="AxelRam">
 
+    <meta name="twitter:card" content="summary_large_image">
     <meta property="og:title" content="PyNodes">
     <meta property="og:description" content="Herramienta Para Crear Guiones de Ren'Py Facilmente">
     <meta property="og:image" content="https://raw.githubusercontent.com/Axel-Ram/PyNodes/refs/heads/main/thumbnail.jpg">
@@ -586,9 +587,39 @@
             }
 
             // Después de que Drawflow renderice los nodos, reconstruimos los personajes
+            // y restauramos los colores de header y estados de lock que no persisten en el HTML
             setTimeout(() => {
                 rebuildCharacters();
                 refreshPreview();
+
+                // Restaurar el color del header de cada nodo de personaje
+                // y el estado de bloqueo del ID
+                Object.entries(characterData).forEach(([nodeId, data]) => {
+                    const nodeEl = document.querySelector(`#node-${nodeId}`);
+                    if (!nodeEl) return;
+
+                    // Restaurar color del header
+                    const header = nodeEl.querySelector('.char-header');
+                    if (header && data.color && data.color !== '#ffffff') {
+                        header.style.background = data.color;
+                        header.style.color = getTextColor(data.color);
+                    }
+
+                    // Restaurar estado del campo ID (readonly si ya tiene valor)
+                    const idInput = nodeEl.querySelector('[df-id]');
+                    if (idInput && data.id) {
+                        idInput.value    = data.id;
+                        idInput.readOnly = true;
+                        idInput.style.opacity = '0.6';
+                        idInput.title = 'El ID no se puede cambiar una vez definido';
+                    }
+
+                    // Restaurar nombre y color en los inputs
+                    const nameInput  = nodeEl.querySelector('[df-name]');
+                    const colorInput = nodeEl.querySelector('[df-color]');
+                    if (nameInput)  nameInput.value  = data.name  || '';
+                    if (colorInput) colorInput.value = data.color || '#ffffff';
+                });
             }, 100);
 
         } catch (e) {
@@ -598,6 +629,12 @@
 
     // Intentamos cargar la sesión anterior al iniciar
     loadSession();
+
+    // ── Guardado automático en cualquier edición de nodo ──
+    // En lugar de añadir saveSession() a cada oninput/onchange individualmente,
+    // escuchamos los eventos en el canvas con debounce. Esto cubre todos los nodos.
+    container.addEventListener('input',  () => saveSession());
+    container.addEventListener('change', () => saveSession());
 
     // ── Rastreo de posición del mouse en el canvas ──
     // Lo usamos para pegar nodos exactamente donde está el cursor (Ctrl+V)
@@ -763,23 +800,25 @@
         const html = `
             <div class="node-container">
                 <div class="node-header char-header">
-                    <span>Definir Personaje</span>
+                    <span>Personaje</span>
                     <button class="minimize-btn" onclick="toggleCharacterMinimize(this)" title="Minimizar">−</button>
                 </div>
                 <div class="node-content">
-                    ID:
-                    <input type="text" df-id placeholder="e"
-                        oninput="onCharacterInput(this, 'id')"
-                        title="Identificador corto sin espacios. Bloquéalo al terminar.">
+                    ID <span style="font-size:10px;color:#888">(no editable tras definirse)</span>:
+                    <div style="display:flex;gap:4px;align-items:center">
+                        <input type="text" df-id placeholder="e" style="flex:1"
+                            oninput="onCharacterInput(this, 'id')"
+                            title="Identificador corto sin espacios. Se bloquea al escribir.">
+                        <button class="lock-btn" onclick="resetCharacterId(this)"
+                            title="Borrar el ID para poder cambiarlo (perderás las referencias en otros nodos)"
+                            style="display:none;background:#c0392b;font-size:10px;padding:2px 6px">✕</button>
+                    </div>
                     Nombre:
                     <input type="text" df-name placeholder="Eileen"
                         oninput="onCharacterInput(this, 'name')">
                     Color:
                     <input type="color" df-color value="#ffffff"
                         onchange="onCharacterInput(this, 'color')">
-                    <button class="lock-btn" onclick="toggleCharacterLock(this)">
-                        🔓 ID libre
-                    </button>
                 </div>
                 <div class="char-mini-label" style="display:none">— sin nombre —</div>
             </div>
@@ -795,18 +834,23 @@
         return nodeId;
     }
 
-    // Guarda el campo editado en characterData (no en Drawflow)
+    // Guarda el campo editado en characterData.
+    // Cuando se escribe el ID por primera vez, lo pone readonly para evitar bugs.
     function onCharacterInput(inputEl, field) {
         const nodeEl = inputEl.closest('.drawflow-node');
         if (!nodeEl) return;
 
         const nodeId = parseInt(nodeEl.id.replace('node-', ''));
-        if (field === 'id' && characterData[nodeId]?.locked) return;
-
         if (!characterData[nodeId]) characterData[nodeId] = { id: '', name: '', color: '#ffffff', locked: false };
+
         characterData[nodeId][field] = inputEl.value;
 
-        // --- NUEVO: Cambia el color del header del nodo actual ---
+        // Al salir del campo ID (o cuando tiene valor), lo bloqueamos
+        if (field === 'id' && inputEl.value.trim()) {
+            // Esperamos al blur para no molestar mientras escribe
+            inputEl.addEventListener('blur', () => lockCharacterId(inputEl), { once: true });
+        }
+
         if (field === 'color') {
             const header = nodeEl.querySelector('.char-header');
             if (header) {
@@ -817,26 +861,39 @@
 
         rebuildCharacters();
         refreshPreview();
-        saveSession();
     }
-    function toggleCharacterLock(btn) {
+
+    // Hace el campo ID de solo lectura y muestra el botón de reset
+    function lockCharacterId(idInput) {
+        if (!idInput.value.trim()) return;
+        idInput.readOnly = true;
+        idInput.style.opacity = '0.6';
+        idInput.title = 'El ID no se puede cambiar. Pulsa ✕ para resetearlo (perderás referencias).';
+        const resetBtn = idInput.closest('div').querySelector('.lock-btn');
+        if (resetBtn) resetBtn.style.display = 'block';
+    }
+
+    // Permite resetear el ID con una advertencia clara
+    function resetCharacterId(btn) {
+        const confirmed = confirm(
+            'Si cambias el ID, todos los nodos de Diálogo y Show que lo usen\n' +
+            'perderán la referencia a este personaje.\n\n¿Continuar de todas formas?'
+        );
+        if (!confirmed) return;
+
         const nodeEl  = btn.closest('.drawflow-node');
         const nodeId  = parseInt(nodeEl.id.replace('node-', ''));
         const idInput = nodeEl.querySelector('[df-id]');
-        const isLocked = characterData[nodeId]?.locked;
 
-        if (isLocked) {
-            characterData[nodeId].locked = false;
-            idInput.disabled = false;
-            btn.textContent  = '🔓 ID libre';
-            btn.classList.remove('locked');
-        } else {
-            if (!characterData[nodeId]?.id) { alert('Escribe un ID antes de bloquear.'); return; }
-            characterData[nodeId].locked = true;
-            idInput.disabled = true;
-            btn.textContent  = '🔒 ID fijo';
-            btn.classList.add('locked');
-        }
+        idInput.readOnly    = false;
+        idInput.style.opacity = '1';
+        idInput.value       = '';
+        idInput.title       = 'Identificador corto sin espacios.';
+        btn.style.display   = 'none';
+
+        if (characterData[nodeId]) characterData[nodeId].id = '';
+        rebuildCharacters();
+        refreshPreview();
     }
 
     // Minimizar / expandir el nodo de personaje
@@ -922,14 +979,51 @@
                         <option value="offscreenleft">Offscreen Left</option>
                         <option value="offscreenright">Offscreen Right</option>
                     </select>
-                    Animación:
+                    Transición (with):
                     <select df-transition onchange="refreshPreview()">
-                        <option value="">Sin animación</option>
-                        <option value="ease">ease</option>
-                        <option value="ease-in">ease-in</option>
-                        <option value="ease-out">ease-out</option>
-                        <option value="ease-in-out">ease-in-out</option>
-                        <option value="linear">linear</option>
+                        <optgroup label="Sin transición">
+                            <option value="">Ninguna</option>
+                        </optgroup>
+                        <optgroup label="Básicas">
+                            <option value="dissolve">dissolve</option>
+                            <option value="fade">fade</option>
+                            <option value="pixellate">pixellate</option>
+                        </optgroup>
+                        <optgroup label="Ease (aparición suave)">
+                            <option value="ease">ease</option>
+                            <option value="easein">easein</option>
+                            <option value="easeout">easeout</option>
+                            <option value="easeinout">easeinout</option>
+                        </optgroup>
+                        <optgroup label="Move in (entrar desde fuera)">
+                            <option value="moveinright">moveinright</option>
+                            <option value="moveinleft">moveinleft</option>
+                            <option value="moveintop">moveintop</option>
+                            <option value="moveinbottom">moveinbottom</option>
+                        </optgroup>
+                        <optgroup label="Move out (salir hacia fuera)">
+                            <option value="moveoutright">moveoutright</option>
+                            <option value="moveoutleft">moveoutleft</option>
+                            <option value="moveouttop">moveouttop</option>
+                            <option value="moveoutbottom">moveoutbottom</option>
+                        </optgroup>
+                        <optgroup label="Zoom">
+                            <option value="zoomin">zoomin</option>
+                            <option value="zoomout">zoomout</option>
+                            <option value="zoominout">zoominout</option>
+                        </optgroup>
+                        <optgroup label="Wipe">
+                            <option value="wipeleft">wipeleft</option>
+                            <option value="wiperight">wiperight</option>
+                            <option value="wipeup">wipeup</option>
+                            <option value="wipedown">wipedown</option>
+                        </optgroup>
+                        <optgroup label="Slide">
+                            <option value="slideleft">slideleft</option>
+                            <option value="slideright">slideright</option>
+                            <option value="slideup">slideup</option>
+                            <option value="slidedown">slidedown</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
@@ -974,16 +1068,33 @@
                     Fondo:
                     <input type="text" df-background placeholder="bg bedroom" oninput="refreshPreview()"
                         title="Nombre del background definido en Ren'Py, ej: bg bedroom">
-                    Animación:
+                    Transición (with):
                     <select df-transition onchange="refreshPreview()">
-                        <option value="">Sin animación</option>
-                        <option value="dissolve">dissolve</option>
-                        <option value="fade">fade</option>
-                        <option value="pixellate">pixellate</option>
-                        <option value="blinds">blinds</option>
-                        <option value="squares">squares</option>
-                        <option value="wipeleft">wipeleft</option>
-                        <option value="wiperight">wiperight</option>
+                        <option value="">Ninguna</option>
+                        <optgroup label="Básicas">
+                            <option value="dissolve">dissolve</option>
+                            <option value="fade">fade</option>
+                            <option value="pixellate">pixellate</option>
+                            <option value="blinds">blinds</option>
+                            <option value="squares">squares</option>
+                        </optgroup>
+                        <optgroup label="Ease">
+                            <option value="ease">ease</option>
+                            <option value="easein">easein</option>
+                            <option value="easeout">easeout</option>
+                        </optgroup>
+                        <optgroup label="Wipe">
+                            <option value="wipeleft">wipeleft</option>
+                            <option value="wiperight">wiperight</option>
+                            <option value="wipeup">wipeup</option>
+                            <option value="wipedown">wipedown</option>
+                        </optgroup>
+                        <optgroup label="Slide">
+                            <option value="slideleft">slideleft</option>
+                            <option value="slideright">slideright</option>
+                            <option value="slideup">slideup</option>
+                            <option value="slidedown">slidedown</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
@@ -1478,6 +1589,7 @@
     }
 
     // Reconstruye `characters` desde characterData y actualiza todos los selectores del canvas
+    // Reconstruye `characters` desde characterData y actualiza todos los selectores del canvas
     function rebuildCharacters() {
         characters = Object.entries(characterData)
             .filter(([, d]) => d.id !== '')
@@ -1485,17 +1597,25 @@
 
         // Selectores de Diálogo
         document.querySelectorAll('.char-selector').forEach(sel => {
-            const val = sel.value;
+            // Extraemos el valor real guardado en Drawflow
+            const nodeId = sel.closest('.drawflow-node').id.replace('node-', '');
+            const nodeData = editor.drawflow.drawflow.Home.data[nodeId]?.data || {};
+            const savedVal = nodeData.char_id || 'narrator';
+
             sel.innerHTML = `<option value="narrator">Narrador</option>` + buildCharacterOptions();
-            sel.value = val;
+            sel.value = savedVal; // Asignamos el valor después de crear las opciones
             updateDialogHeader(sel);
         });
 
         // Selectores de Show/Hide
         document.querySelectorAll('.show-char-selector').forEach(sel => {
-            const val = sel.value;
+            // Extraemos el valor real guardado en Drawflow
+            const nodeId = sel.closest('.drawflow-node').id.replace('node-', '');
+            const nodeData = editor.drawflow.drawflow.Home.data[nodeId]?.data || {};
+            const savedVal = nodeData.char_id || '';
+
             sel.innerHTML = `<option value="">-- ninguno --</option>` + buildCharacterOptions();
-            sel.value = val;
+            sel.value = savedVal; // Asignamos el valor después de crear las opciones
             updateShowHideCharHeader(sel);
         });
 
@@ -1785,6 +1905,29 @@
                     rebuildCharacters();
                     saveSession();
                     refreshPreview();
+
+                    // Restaurar colores de header y estado readonly de personajes
+                    Object.entries(characterData).forEach(([nodeId, data]) => {
+                        const nodeEl = document.querySelector(`#node-${nodeId}`);
+                        if (!nodeEl) return;
+                        const header = nodeEl.querySelector('.char-header');
+                        if (header && data.color && data.color !== '#ffffff') {
+                            header.style.background = data.color;
+                            header.style.color = getTextColor(data.color);
+                        }
+                        const idInput = nodeEl.querySelector('[df-id]');
+                        if (idInput && data.id) {
+                            idInput.value    = data.id;
+                            idInput.readOnly = true;
+                            idInput.style.opacity = '0.6';
+                            const resetBtn = idInput.closest('div')?.querySelector('.lock-btn');
+                            if (resetBtn) resetBtn.style.display = 'block';
+                        }
+                        const nameInput  = nodeEl.querySelector('[df-name]');
+                        const colorInput = nodeEl.querySelector('[df-color]');
+                        if (nameInput)  nameInput.value  = data.name  || '';
+                        if (colorInput) colorInput.value = data.color || '#ffffff';
+                    });
                 }, 100);
 
             } catch (err) {
